@@ -1,0 +1,76 @@
+name: Terraform
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+
+    env:
+      # AWS credentials
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN:     ${{ secrets.AWS_SESSION_TOKEN }}
+      # Remote state for RDS
+      TF_VAR_rds_state_bucket: ${{ secrets.RDS_STATE_BUCKET }}
+      TF_VAR_rds_state_key:    ${{ secrets.RDS_STATE_KEY }}
+      # API Gateway / Lambda
+      TF_VAR_api_gateway_name: ${{ secrets.API_GATEWAY_NAME }}
+      TF_VAR_lambda_name:      ${{ secrets.LAMBDA_NAME }}
+      TF_VAR_stage_name:       ${{ secrets.STAGE_NAME }}
+      TF_VAR_auth_path:        ${{ secrets.AUTH_PATH }}
+      # EKS / App
+      TF_VAR_cluster_name:        ${{ secrets.EKS_CLUSTER_NAME }}
+      TF_VAR_k8s_version:         ${{ secrets.EKS_K8S_VERSION }}
+      TF_VAR_node_instance_type:  ${{ secrets.EKS_NODE_TYPE }}
+      TF_VAR_dockerhub_repo:      ${{ secrets.DOCKERHUB_REPO }}
+      TF_VAR_app_image_tag:       ${{ secrets.APP_IMAGE_TAG }}
+      TF_VAR_app_namespace:       ${{ secrets.APP_NAMESPACE }}
+      TF_VAR_app_replicas:        ${{ secrets.APP_REPLICAS }}
+      TF_VAR_app_container_port:  ${{ secrets.APP_CONTAINER_PORT }}
+      TF_VAR_app_service_port:    ${{ secrets.APP_SERVICE_PORT }}
+      TF_VAR_app_service_type:    ${{ secrets.APP_SERVICE_TYPE }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Terraform CLI
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: "1.4.6"
+
+      - name: Terraform fmt
+        id: fmt
+        run: terraform fmt -check
+
+      - name: Terraform init
+        id: init
+        run: terraform init -input=false
+
+      - name: Terraform validate
+        id: validate
+        run: terraform validate -no-color
+
+      - name: Terraform plan (PR)
+        id: plan
+        if: github.event_name == 'pull_request'
+        run: |
+          terraform plan -no-color -input=false -out=tfplan
+          terraform show -no-color tfplan
+
+      - name: Upload plan artifact (optional)
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v3
+        with:
+          name: terraform-plan
+          path: tfplan
+
+      - name: Terraform apply (main)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve -input=false
