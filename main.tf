@@ -2,16 +2,15 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# Módulo Cognito
+# Módulo Cognito corrigido
 resource "aws_cognito_user_pool" "fastfood_pool" {
   name = "fastfood-auth-pool"
 
-  # Atributos customizados para CPF
   schema {
     attribute_data_type = "String"
-    name                = "cpf"
-    required            = true
-    mutable             = true
+    name               = "cpf"
+    required           = true
+    mutable            = true
 
     string_attribute_constraints {
       min_length = 11
@@ -19,15 +18,23 @@ resource "aws_cognito_user_pool" "fastfood_pool" {
     }
   }
 
+  # Política de senha corrigida (mínimo 6 caracteres)
   password_policy {
-    minimum_length    = 0
+    minimum_length    = 6  # CORREÇÃO: mínimo permitido é 6
     require_lowercase = false
     require_numbers   = false
     require_symbols   = false
     require_uppercase = false
   }
 
-  alias_attributes = ["email"] # Necessário para login sem senha
+  # Adicionado para permitir autenticação sem senha
+  alias_attributes = ["email"]
+  auto_verified_attributes = ["email"]
+  
+  # Configuração para login com CPF
+  username_configuration {
+    case_sensitive = false
+  }
 }
 
 resource "aws_cognito_user_pool_client" "client" {
@@ -39,9 +46,13 @@ resource "aws_cognito_user_pool_client" "client" {
     "ALLOW_USER_SRP_AUTH"
   ]
   generate_secret = false
+  
+  # Permitir autenticação apenas com CPF
+  auth_session_validity = 3
+  prevent_user_existence_errors = "ENABLED"
 }
 
-# Módulo Lambda
+# Módulo Lambda (mantido igual)
 resource "aws_lambda_function" "auth_lambda" {
   filename      = "lambda/auth-lambda/auth_lambda.zip"
   function_name = "fastfood-auth-lambda"
@@ -58,6 +69,7 @@ resource "aws_lambda_function" "auth_lambda" {
   }
 }
 
+# IAM Role (mantido igual)
 resource "aws_iam_role" "lambda_role" {
   name = "lambda-cognito-auth-role"
 
@@ -84,7 +96,11 @@ resource "aws_iam_policy" "cognito_access" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action   = ["cognito-idp:AdminInitiateAuth", "cognito-idp:AdminCreateUser"]
+      Action   = [
+        "cognito-idp:AdminInitiateAuth",
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminSetUserPassword"
+      ]
       Effect   = "Allow"
       Resource = aws_cognito_user_pool.fastfood_pool.arn
     }]
@@ -96,7 +112,7 @@ resource "aws_iam_role_policy_attachment" "lambda_cognito" {
   policy_arn = aws_iam_policy.cognito_access.arn
 }
 
-# Módulo API Gateway
+# Módulo API Gateway corrigido
 resource "aws_api_gateway_rest_api" "main" {
   name = "fastfood-gateway"
 }
@@ -126,15 +142,26 @@ resource "aws_api_gateway_integration" "lambda_integration" {
 resource "aws_api_gateway_resource" "proxy" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_rest_api.main.root_resource_id
-  path_part   = "api"
+  path_part   = "{proxy+}"
 }
 
-resource "aws_api_gateway_proxy" "eks_proxy" {
+resource "aws_api_gateway_method" "proxy" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.proxy.id
+  http_method   = "ANY"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+# CORREÇÃO: Recurso de integração HTTP correto
+resource "aws_api_gateway_integration" "eks_integration" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.proxy.id
-  http_method = "ANY"
-  type        = "HTTP_PROXY"
-  uri         = "http://a5c73036372f74af4909bbafe0099347-640925557.us-east-1.elb.amazonaws.com/{proxy}"
+  http_method = aws_api_gateway_method.proxy.http_method
+
+  type                    = "HTTP_PROXY"
+  integration_http_method = "ANY"
+  uri                     = "http://a5c73036372f74af4909bbafe0099347-640925557.us-east-1.elb.amazonaws.com/{proxy}"
 
   request_parameters = {
     "integration.request.path.proxy" = "method.request.path.proxy"
@@ -151,7 +178,7 @@ resource "aws_api_gateway_authorizer" "cognito" {
 resource "aws_api_gateway_deployment" "deployment" {
   depends_on = [
     aws_api_gateway_integration.lambda_integration,
-    aws_api_gateway_proxy.eks_proxy
+    aws_api_gateway_integration.eks_integration
   ]
 
   rest_api_id = aws_api_gateway_rest_api.main.id
@@ -159,5 +186,14 @@ resource "aws_api_gateway_deployment" "deployment" {
 }
 
 output "api_url" {
-  value = aws_api_gateway_deployment.deployment.invoke_url
+  value = "${aws_api_gateway_deployment.deployment.invoke_url}/auth"
+}
+
+# Adicione este recurso
+resource "aws_lambda_permission" "api_gateway" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.auth_lambda.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/${aws_api_gateway_method.auth_post.http_method}${aws_api_gateway_resource.auth.path}"
 }

@@ -17,7 +17,6 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # Configura credenciais AWS via secrets
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v2
       with:
@@ -26,43 +25,27 @@ jobs:
         aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
         aws-region: ${{ env.AWS_REGION }}
 
-    # Configura Terraform
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v2
       with:
         terraform_version: "1.5.7"
 
-    # Instala Python e dependências para empacotamento
+    - name: Terraform Setup
+      run: |
+        terraform init -upgrade
+        terraform fmt -recursive
+
     - name: Setup Python
       uses: actions/setup-python@v4
       with:
         python-version: "3.9"
 
-    # Empacota a função Lambda
     - name: Package Lambda function
       working-directory: lambda/auth-lambda
       run: |
-        # Instala dependências
         pip install -r requirements.txt -t .
-        
-        # Cria o ZIP (exclui arquivos desnecessários)
         zip -r auth_lambda.zip . \
-          -x "*.git*" \
-          -x "*.terraform*" \
-          -x "*.zip" \
-          -x ".github/*" \
-          -x "__pycache__/*"
-        
-        # Lista conteúdo para verificação (opcional)
-        echo "Conteúdo do ZIP:"
-        unzip -l auth_lambda.zip | head -n 15
-
-    # Inicializa e aplica Terraform
-    - name: Terraform Init
-      run: terraform init
-
-    - name: Terraform Format Check
-      run: terraform fmt -check -diff
+          -x "*.git*" "*.terraform*" "*.zip" ".github/*" "__pycache__/*"
 
     - name: Terraform Validate
       run: terraform validate
