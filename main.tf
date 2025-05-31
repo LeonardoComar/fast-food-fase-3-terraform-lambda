@@ -38,10 +38,10 @@ resource "aws_apigatewayv2_api" "eks_proxy_api" {
 
 # Cria a integração que aponta para o seu ALB (EKS)
 resource "aws_apigatewayv2_integration" "eks_backend" {
-  api_id                = aws_apigatewayv2_api.eks_proxy_api.id
-  integration_type      = "HTTP_PROXY"
-  integration_method    = "ANY"
-  integration_uri       = var.alb_url
+  api_id                 = aws_apigatewayv2_api.eks_proxy_api.id
+  integration_type       = "HTTP_PROXY"
+  integration_method     = "ANY"
+  integration_uri        = var.alb_url
   payload_format_version = "1.0"
 
   # Observações:
