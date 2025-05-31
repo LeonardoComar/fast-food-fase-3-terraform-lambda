@@ -12,3 +12,7 @@ override.tf.json
 .terraformrc
 terraform.rc
 .terraform.lock.hcl
+lambda/auth-lambda/*.zip
+lambda/auth-lambda/boto3/
+lambda/auth-lambda/botocore/
+lambda/auth-lambda/__pycache__/

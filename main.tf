@@ -1,28 +1,71 @@
-terraform {
-  required_version = ">= 1.3.0"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
+provider "aws" {
+  region = "us-east-1"
+}
+
+# Módulo Cognito
+resource "aws_cognito_user_pool" "fastfood_pool" {
+  name = "fastfood-auth-pool"
+
+  # Atributos customizados para CPF
+  schema {
+    attribute_data_type = "String"
+    name               = "cpf"
+    required           = true
+    mutable            = true
+
+    string_attribute_constraints {
+      min_length = 11
+      max_length = 14
+    }
+  }
+
+  password_policy {
+    minimum_length    = 0
+    require_lowercase = false
+    require_numbers   = false
+    require_symbols   = false
+    require_uppercase = false
+  }
+
+  alias_attributes = ["email"] # Necessário para login sem senha
+}
+
+resource "aws_cognito_user_pool_client" "client" {
+  name = "fastfood-client"
+
+  user_pool_id = aws_cognito_user_pool.fastfood_pool.id
+  explicit_auth_flows = [
+    "ALLOW_CUSTOM_AUTH",
+    "ALLOW_USER_SRP_AUTH"
+  ]
+  generate_secret = false
+}
+
+# Módulo Lambda
+resource "aws_lambda_function" "auth_lambda" {
+  filename      = "lambda/auth-lambda/auth_lambda.zip"
+  function_name = "fastfood-auth-lambda"
+  role          = aws_iam_role.lambda_role.arn
+  handler       = "main.lambda_handler"
+  runtime       = "python3.9"
+  timeout       = 30
+
+  environment {
+    variables = {
+      USER_POOL_ID = aws_cognito_user_pool.fastfood_pool.id
+      CLIENT_ID    = aws_cognito_user_pool_client.client.id
     }
   }
 }
 
-provider "aws" {
-  region = var.aws_region
-}
-
-########################################
-# IAM Role para a Lambda
-########################################
-resource "aws_iam_role" "lambda_exec" {
-  name = "${var.lambda_name}-exec-role"
+resource "aws_iam_role" "lambda_role" {
+  name = "lambda-cognito-auth-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
       Principal = {
         Service = "lambda.amazonaws.com"
       }
@@ -30,142 +73,91 @@ resource "aws_iam_role" "lambda_exec" {
   })
 }
 
-# Anexa política gerenciada básica de execução para logs CloudWatch
-resource "aws_iam_role_policy_attachment" "lambda_logs" {
-  role       = aws_iam_role.lambda_exec.name
+resource "aws_iam_role_policy_attachment" "lambda_basic" {
+  role       = aws_iam_role.lambda_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-########################################
-# Zip da função inline
-########################################
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  output_path = "${path.module}/lambda_payload.zip"
+resource "aws_iam_policy" "cognito_access" {
+  name = "CognitoLambdaAccess"
 
-  source {
-    content  = <<-EOF
-      def handler(event, context):
-          return {
-              "statusCode": 200,
-              "headers": {"Content-Type": "application/json"},
-              "body": "\"Estou aqui\""
-          }
-    EOF
-    filename = "lambda_function.py"
-  }
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action   = ["cognito-idp:AdminInitiateAuth", "cognito-idp:AdminCreateUser"]
+      Effect   = "Allow"
+      Resource = aws_cognito_user_pool.fastfood_pool.arn
+    }]
+  })
 }
 
-########################################
-# Função Lambda
-########################################
-resource "aws_lambda_function" "auth" {
-  function_name = var.lambda_name
-  role          = aws_iam_role.lambda_exec.arn
-  handler       = "lambda_function.handler"
-  runtime       = "python3.9"
-
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
-
-  # Timeout/padronizações opcionais
-  memory_size = 128
-  timeout     = 5
+resource "aws_iam_role_policy_attachment" "lambda_cognito" {
+  role       = aws_iam_role.lambda_role.name
+  policy_arn = aws_iam_policy.cognito_access.arn
 }
 
-########################################
-# Integração da Lambda no API Gateway
-# (assumindo que você já tem o API criado; aqui puxamos pelo ID)
-########################################
-data "aws_api_gateway_rest_api" "api" {
-  name = var.api_gateway_name
+# Módulo API Gateway
+resource "aws_api_gateway_rest_api" "main" {
+  name = "fastfood-gateway"
 }
 
-# recurso proxy já existente? Caso queira uma rota específica:
-resource "aws_api_gateway_resource" "lambda_auth" {
-  rest_api_id = data.aws_api_gateway_rest_api.api.id
-  parent_id   = data.aws_api_gateway_rest_api.api.root_resource_id
-  path_part   = var.auth_path    # ex.: "auth"
+resource "aws_api_gateway_resource" "auth" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
+  path_part   = "auth"
 }
 
-resource "aws_api_gateway_method" "auth_any" {
-  rest_api_id   = data.aws_api_gateway_rest_api.api.id
-  resource_id   = aws_api_gateway_resource.lambda_auth.id
-  http_method   = "ANY"
+resource "aws_api_gateway_method" "auth_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.auth.id
+  http_method   = "POST"
   authorization = "NONE"
 }
 
-resource "aws_api_gateway_integration" "auth_lambda" {
-  rest_api_id             = data.aws_api_gateway_rest_api.api.id
-  resource_id             = aws_api_gateway_resource.lambda_auth.id
-  http_method             = aws_api_gateway_method.auth_any.http_method
+resource "aws_api_gateway_integration" "lambda_integration" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.auth.id
+  http_method             = aws_api_gateway_method.auth_post.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = "arn:aws:apigateway:${var.aws_region}:lambda:path/2015-03-31/functions/${aws_lambda_function.auth.arn}/invocations"
+  uri                     = aws_lambda_function.auth_lambda.invoke_arn
 }
 
-resource "aws_lambda_permission" "allow_apigw" {
-  statement_id  = "AllowInvokeFromAPIGW"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.auth.arn
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${data.aws_api_gateway_rest_api.api.execution_arn}/*/*/${var.auth_path}"
+resource "aws_api_gateway_resource" "proxy" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
+  path_part   = "api"
 }
 
-# Redeployment automático quando a integração mudar
-resource "aws_api_gateway_deployment" "deployment" {
-  depends_on = [ aws_api_gateway_integration.auth_lambda ]
+resource "aws_api_gateway_proxy" "eks_proxy" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.proxy.id
+  http_method = "ANY"
+  type        = "HTTP_PROXY"
+  uri         = "http://a5c73036372f74af4909bbafe0099347-640925557.us-east-1.elb.amazonaws.com/{proxy}"
 
-  rest_api_id = data.aws_api_gateway_rest_api.api.id
-  triggers = {
-    lambda_sha = sha1(data.archive_file.lambda_zip.output_base64sha256)
+  request_parameters = {
+    "integration.request.path.proxy" = "method.request.path.proxy"
   }
 }
 
-resource "aws_api_gateway_stage" "stage" {
-  rest_api_id   = data.aws_api_gateway_rest_api.api.id
-  deployment_id = aws_api_gateway_deployment.deployment.id
-  stage_name    = var.stage_name
-  auto_deploy   = true
+resource "aws_api_gateway_authorizer" "cognito" {
+  name          = "cognito-authorizer"
+  type          = "COGNITO_USER_POOLS"
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  provider_arns = [aws_cognito_user_pool.fastfood_pool.arn]
 }
 
-########################################
-# Outputs
-########################################
-output "lambda_arn" {
-  value = aws_lambda_function.auth.arn
+resource "aws_api_gateway_deployment" "deployment" {
+  depends_on = [
+    aws_api_gateway_integration.lambda_integration,
+    aws_api_gateway_proxy.eks_proxy
+  ]
+
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  stage_name  = "prod"
 }
 
-output "auth_api_invoke_url" {
-  description = "URL para chamar a rota de auth"
-  value = "${data.aws_api_gateway_rest_api.api.execution_arn}/${aws_api_gateway_stage.stage.stage_name}/${var.auth_path}"
-}
-
-########################################
-# Variáveis
-########################################
-variable "aws_region" {
-  type    = string
-  default = "us-east-1"
-}
-
-variable "lambda_name" {
-  type    = string
-  default = "myapp-auth-lambda"
-}
-
-variable "api_gateway_name" {
-  description = "Nome do API Gateway já criado"
-  type        = string
-}
-
-variable "stage_name" {
-  type    = string
-  default = "prod"
-}
-
-variable "auth_path" {
-  description = "Caminho na API para a Lambda (ex.: auth)"
-  type        = string
-  default     = "auth"
+output "api_url" {
+  value = aws_api_gateway_deployment.deployment.invoke_url
 }

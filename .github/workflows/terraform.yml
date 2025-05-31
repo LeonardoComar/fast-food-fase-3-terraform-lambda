@@ -10,67 +10,67 @@ jobs:
   terraform:
     name: Terraform
     runs-on: ubuntu-latest
-
     env:
-      # AWS credentials
-      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN:     ${{ secrets.AWS_SESSION_TOKEN }}
-      # Remote state for RDS
-      TF_VAR_rds_state_bucket: ${{ secrets.RDS_STATE_BUCKET }}
-      TF_VAR_rds_state_key:    ${{ secrets.RDS_STATE_KEY }}
-      # API Gateway / Lambda
-      TF_VAR_api_gateway_name: ${{ secrets.API_GATEWAY_NAME }}
-      TF_VAR_lambda_name:      ${{ secrets.LAMBDA_NAME }}
-      TF_VAR_stage_name:       ${{ secrets.STAGE_NAME }}
-      TF_VAR_auth_path:        ${{ secrets.AUTH_PATH }}
-      # EKS / App
-      TF_VAR_cluster_name:        ${{ secrets.EKS_CLUSTER_NAME }}
-      TF_VAR_k8s_version:         ${{ secrets.EKS_K8S_VERSION }}
-      TF_VAR_node_instance_type:  ${{ secrets.EKS_NODE_TYPE }}
-      TF_VAR_dockerhub_repo:      ${{ secrets.DOCKERHUB_REPO }}
-      TF_VAR_app_image_tag:       ${{ secrets.APP_IMAGE_TAG }}
-      TF_VAR_app_namespace:       ${{ secrets.APP_NAMESPACE }}
-      TF_VAR_app_replicas:        ${{ secrets.APP_REPLICAS }}
-      TF_VAR_app_container_port:  ${{ secrets.APP_CONTAINER_PORT }}
-      TF_VAR_app_service_port:    ${{ secrets.APP_SERVICE_PORT }}
-      TF_VAR_app_service_type:    ${{ secrets.APP_SERVICE_TYPE }}
+      AWS_REGION: "us-east-1"
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      - name: Setup Terraform CLI
-        uses: hashicorp/setup-terraform@v2
-        with:
-          terraform_version: "1.4.6"
+    # Configura credenciais AWS via secrets
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+        aws-region: ${{ env.AWS_REGION }}
 
-      - name: Terraform fmt
-        id: fmt
-        run: terraform fmt -check
+    # Configura Terraform
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: "1.5.7"
 
-      - name: Terraform init
-        id: init
-        run: terraform init -input=false
+    # Instala Python e dependências para empacotamento
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.9"
 
-      - name: Terraform validate
-        id: validate
-        run: terraform validate -no-color
+    # Empacota a função Lambda
+    - name: Package Lambda function
+      working-directory: lambda/auth-lambda
+      run: |
+        # Instala dependências
+        pip install -r requirements.txt -t .
+        
+        # Cria o ZIP (exclui arquivos desnecessários)
+        zip -r auth_lambda.zip . \
+          -x "*.git*" \
+          -x "*.terraform*" \
+          -x "*.zip" \
+          -x ".github/*" \
+          -x "__pycache__/*"
+        
+        # Lista conteúdo para verificação (opcional)
+        echo "Conteúdo do ZIP:"
+        unzip -l auth_lambda.zip | head -n 15
 
-      - name: Terraform plan (PR)
-        id: plan
-        if: github.event_name == 'pull_request'
-        run: |
-          terraform plan -no-color -input=false -out=tfplan
-          terraform show -no-color tfplan
+    # Inicializa e aplica Terraform
+    - name: Terraform Init
+      run: terraform init
 
-      - name: Upload plan artifact (optional)
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v3
-        with:
-          name: terraform-plan
-          path: tfplan
+    - name: Terraform Format Check
+      run: terraform fmt -check -diff
 
-      - name: Terraform apply (main)
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: terraform apply -auto-approve -input=false
+    - name: Terraform Validate
+      run: terraform validate
+
+    - name: Terraform Plan
+      run: terraform plan -input=false
+      if: github.event_name == 'pull_request'
+
+    - name: Terraform Apply
+      run: terraform apply -auto-approve -input=false
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
