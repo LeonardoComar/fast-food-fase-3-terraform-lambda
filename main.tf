@@ -9,9 +9,9 @@ resource "aws_cognito_user_pool" "fastfood_pool" {
   # Atributos customizados para CPF
   schema {
     attribute_data_type = "String"
-    name               = "cpf"
-    required           = true
-    mutable            = true
+    name                = "cpf"
+    required            = true
+    mutable             = true
 
     string_attribute_constraints {
       min_length = 11
