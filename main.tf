@@ -1,199 +1,138 @@
+##############################################
+# 1. Provider e variáveis básicas
+##############################################
+
 provider "aws" {
   region = "us-east-1"
 }
 
-# Módulo Cognito corrigido
-resource "aws_cognito_user_pool" "fastfood_pool" {
-  name = "fastfood-auth-pool"
-
-  schema {
-    attribute_data_type = "String"
-    name               = "cpf"
-    required           = true
-    mutable            = true
-
-    string_attribute_constraints {
-      min_length = 11
-      max_length = 14
-    }
-  }
-
-  # Política de senha corrigida (mínimo 6 caracteres)
-  password_policy {
-    minimum_length    = 6  # CORREÇÃO: mínimo permitido é 6
-    require_lowercase = false
-    require_numbers   = false
-    require_symbols   = false
-    require_uppercase = false
-  }
-
-  # Adicionado para permitir autenticação sem senha
-  alias_attributes = ["email"]
-  auto_verified_attributes = ["email"]
-  
-  # Configuração para login com CPF
-  username_configuration {
-    case_sensitive = false
-  }
+# Você pode parametrizar a URL do seu ALB (com porta) em variável, para facilitar alterações futuras.
+variable "alb_url" {
+  description = "URL completa do ALB do EKS (incluindo porta). Ex: http://meu-alb-1234567890.us-east-1.elb.amazonaws.com:8080"
+  type        = string
+  default     = "http://a5c73036372f74af4909bbafe0099347-640925557.us-east-1.elb.amazonaws.com:8080"
 }
 
-resource "aws_cognito_user_pool_client" "client" {
-  name = "fastfood-client"
 
-  user_pool_id = aws_cognito_user_pool.fastfood_pool.id
-  explicit_auth_flows = [
-    "ALLOW_CUSTOM_AUTH",
-    "ALLOW_USER_SRP_AUTH"
-  ]
-  generate_secret = false
-  
-  # Permitir autenticação apenas com CPF
-  auth_session_validity = 3
-  prevent_user_existence_errors = "ENABLED"
+##############################################
+# 2. Criação do HTTP API (API Gateway V2)
+##############################################
+
+# Cria um HTTP API que receberá as requisições
+resource "aws_apigatewayv2_api" "eks_proxy_api" {
+  name          = "eks-proxy-api"
+  protocol_type = "HTTP"
+
+  # (Opcional) CORS se você precisar que diferentes domínios consumam sua API
+  # cors_configuration {
+  #   allow_origins = ["*"]
+  #   allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
+  #   allow_headers = ["*"]
+  # }
 }
 
-# Módulo Lambda (mantido igual)
-resource "aws_lambda_function" "auth_lambda" {
-  filename      = "lambda/auth-lambda/auth_lambda.zip"
-  function_name = "fastfood-auth-lambda"
-  role          = aws_iam_role.lambda_role.arn
-  handler       = "main.lambda_handler"
-  runtime       = "python3.9"
-  timeout       = 30
 
-  environment {
-    variables = {
-      USER_POOL_ID = aws_cognito_user_pool.fastfood_pool.id
-      CLIENT_ID    = aws_cognito_user_pool_client.client.id
-    }
-  }
+##############################################
+# 3. Integração HTTP_PROXY com o ALB do EKS
+##############################################
+
+# Cria a integração que aponta para o seu ALB (EKS)
+resource "aws_apigatewayv2_integration" "eks_backend" {
+  api_id                = aws_apigatewayv2_api.eks_proxy_api.id
+  integration_type      = "HTTP_PROXY"
+  integration_method    = "ANY"
+  integration_uri       = var.alb_url
+  payload_format_version = "1.0"
+
+  # Observações:
+  # - Com HTTP_PROXY + "$default" (rota padrão), todo o path e query string que chegar no API Gateway
+  #   serão repassados para o seu ALB exatamente como vier.
+  # - Se você quiser filtrar apenas determinados caminhos, seria preciso criar routes específicas
+  #   em vez de usar $default.
 }
 
-# IAM Role (mantido igual)
-resource "aws_iam_role" "lambda_role" {
-  name = "lambda-cognito-auth-role"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "lambda.amazonaws.com"
-      }
-    }]
-  })
+##############################################
+# 4. Rota padrão (proxy all)
+##############################################
+
+# Ao usar `$default`, o API Gateway não exige rota explícita para cada path.
+# Toda requisição (independente do método e do caminho) será direcionada a `aws_apigatewayv2_integration.eks_backend`.
+resource "aws_apigatewayv2_route" "default_route" {
+  api_id    = aws_apigatewayv2_api.eks_proxy_api.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.eks_backend.id}"
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_basic" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+##############################################
+# 5. Deployment / Stage
+##############################################
+
+# Opcionalmente, você pode criar um estágio separado para “produção”, “homolog”, etc.
+resource "aws_apigatewayv2_stage" "prod" {
+  api_id      = aws_apigatewayv2_api.eks_proxy_api.id
+  name        = "prod"
+  auto_deploy = true
+
+  # Variáveis de ambiente (caso queira repassar alguma coisa ao backend)
+  # default_route_settings {
+  #   logging_level = "INFO"
+  #   data_trace_enabled = true
+  # }
+
+  # Se não quiser versionamento, basta manter o auto_deploy = true,
+  # assim qualquer mudança no `route` ou `integration` já entra no ar.
 }
 
-resource "aws_iam_policy" "cognito_access" {
-  name = "CognitoLambdaAccess"
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action   = [
-        "cognito-idp:AdminInitiateAuth",
-        "cognito-idp:AdminCreateUser",
-        "cognito-idp:AdminSetUserPassword"
-      ]
-      Effect   = "Allow"
-      Resource = aws_cognito_user_pool.fastfood_pool.arn
-    }]
-  })
-}
+##############################################
+# 6. (Opcional) Permissões de CORS ou Autorizadores
+##############################################
 
-resource "aws_iam_role_policy_attachment" "lambda_cognito" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = aws_iam_policy.cognito_access.arn
-}
+# Caso precise liberar CORS, você pode descomentar o bloco cors_configuration no recurso aws_apigatewayv2_api.
+# Se quiser adicionar um Authorizer (JWT, Lambda, etc.), seria algo assim:
 
-# Módulo API Gateway corrigido
-resource "aws_api_gateway_rest_api" "main" {
-  name = "fastfood-gateway"
-}
+# resource "aws_apigatewayv2_authorizer" "jwt_auth" {
+#   name                   = "jwt-auth"
+#   api_id                 = aws_apigatewayv2_api.eks_proxy_api.id
+#   authorizer_type        = "JWT"
+#   identity_sources       = ["$request.header.Authorization"]
+#   jwt_configuration {
+#     issuer = "https://cognito-idp.us-east-1.amazonaws.com/xxxxxx"
+#     audience = ["xxxxxxxxxx"]
+#   }
+# }
 
-resource "aws_api_gateway_resource" "auth" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
-  path_part   = "auth"
-}
+# Depois, vincule o authorizer à rota:
+# resource "aws_apigatewayv2_route" "default_route" {
+#   api_id    = aws_apigatewayv2_api.eks_proxy_api.id
+#   route_key = "$default"
+#   target    = "integrations/${aws_apigatewayv2_integration.eks_backend.id}"
+#   authorization_type = "JWT"
+#   authorizer_id      = aws_apigatewayv2_authorizer.jwt_auth.id
+# }
 
-resource "aws_api_gateway_method" "auth_post" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.auth.id
-  http_method   = "POST"
-  authorization = "NONE"
-}
 
-resource "aws_api_gateway_integration" "lambda_integration" {
-  rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.auth.id
-  http_method             = aws_api_gateway_method.auth_post.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.auth_lambda.invoke_arn
-}
-
-resource "aws_api_gateway_resource" "proxy" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  parent_id   = aws_api_gateway_rest_api.main.root_resource_id
-  path_part   = "{proxy+}"
-}
-
-resource "aws_api_gateway_method" "proxy" {
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.proxy.id
-  http_method   = "ANY"
-  authorization = "COGNITO_USER_POOLS"
-  authorizer_id = aws_api_gateway_authorizer.cognito.id
-}
-
-# CORREÇÃO: Recurso de integração HTTP correto
-resource "aws_api_gateway_integration" "eks_integration" {
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.proxy.id
-  http_method = aws_api_gateway_method.proxy.http_method
-
-  type                    = "HTTP_PROXY"
-  integration_http_method = "ANY"
-  uri                     = "http://a5c73036372f74af4909bbafe0099347-640925557.us-east-1.elb.amazonaws.com/{proxy}"
-
-  request_parameters = {
-    "integration.request.path.proxy" = "method.request.path.proxy"
-  }
-}
-
-resource "aws_api_gateway_authorizer" "cognito" {
-  name          = "cognito-authorizer"
-  type          = "COGNITO_USER_POOLS"
-  rest_api_id   = aws_api_gateway_rest_api.main.id
-  provider_arns = [aws_cognito_user_pool.fastfood_pool.arn]
-}
-
-resource "aws_api_gateway_deployment" "deployment" {
-  depends_on = [
-    aws_api_gateway_integration.lambda_integration,
-    aws_api_gateway_integration.eks_integration
-  ]
-
-  rest_api_id = aws_api_gateway_rest_api.main.id
-  stage_name  = "prod"
-}
-
-output "api_url" {
-  value = "${aws_api_gateway_deployment.deployment.invoke_url}/auth"
-}
-
-# Adicione este recurso
-resource "aws_lambda_permission" "api_gateway" {
-  statement_id  = "AllowExecutionFromAPIGateway"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.auth_lambda.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.main.execution_arn}/*/${aws_api_gateway_method.auth_post.http_method}${aws_api_gateway_resource.auth.path}"
-}
+##############################################
+# 7. Como funciona na prática
+#
+# Após rodar `terraform apply`, você terá:
+#  - Um endpoint HTTP em:
+#      https://<your-api-id>.execute-api.us-east-1.amazonaws.com/prod
+#  - Qualquer requisição enviada para esse endpoint (GET, POST, PUT, DELETE, etc),
+#    em qualquer caminho (e.g. /products, /clients/123, /foo/bar?x=1), será
+#    automaticamente repassada ao ALB: http://a5c73036…amazonaws.com:8080/{proxy}
+#
+# Exemplos:
+#  - GET  https://<api-id>.execute-api.us-east-1.amazonaws.com/prod/products
+#     → proxy → GET http://a5c73036…amazonaws.com:8080/products
+#
+#  - POST https://<api-id>.execute-api.us-east-1.amazonaws.com/prod/clients
+#     → proxy → POST http://a5c73036…amazonaws.com:8080/clients
+#
+#  - PUT  https://<api-id>.execute-api.us-east-1.amazonaws.com/prod/orders/55
+#     → proxy → PUT http://a5c73036…amazonaws.com:8080/orders/55
+#
+# Assim, não é preciso definir cada rota isoladamente: o "$default" cobre tudo.
+##############################################
