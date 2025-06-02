@@ -95,15 +95,15 @@ resource "aws_lambda_permission" "apigw_invoke" {
 ##############################################
 
 resource "aws_apigatewayv2_authorizer" "lambda_auth" {
-  api_id            = aws_apigatewayv2_api.eks_proxy_api.id
-  name              = "lambdaAuthAuthorizer"
-  authorizer_type   = "REQUEST"
+  api_id          = aws_apigatewayv2_api.eks_proxy_api.id
+  name            = "lambdaAuthAuthorizer"
+  authorizer_type = "REQUEST"
 
   # URI no formato esperado para Lambda em HTTP API v2:
-  authorizer_uri    = "arn:aws:apigateway:${aws_lambda_function.lambda_auth.region}:lambda:path/2015-03-31/functions/${aws_lambda_function.lambda_auth.arn}/invocations"
+  authorizer_uri = "arn:aws:apigateway:${aws_lambda_function.lambda_auth.region}:lambda:path/2015-03-31/functions/${aws_lambda_function.lambda_auth.arn}/invocations"
 
   # De onde a Lambda irá extrair o token de autorização (header Authorization)
-  identity_sources  = ["$request.header.Authorization"]
+  identity_sources = ["$request.header.Authorization"]
 
   # Se quiser usar outros parts (querystring, path), poderia adicionar: 
   # identity_sources = ["$request.header.Authorization", "$request.querystring.token"]
