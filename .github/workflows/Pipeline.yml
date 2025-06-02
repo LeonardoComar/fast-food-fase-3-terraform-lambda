@@ -1,0 +1,39 @@
+name: Zip e Publica no Release
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v3
+
+      - name: Criar arquivo ZIP
+        run: |
+          cd src && zip -r ../lambda_function.zip .
+
+      - name: Criar/Atualizar tag latest
+        run: |
+          git fetch --tags
+          if git show-ref --tags | grep -q "refs/tags/latest"; then
+            git tag -d latest
+            git push origin :refs/tags/latest
+          fi
+          git tag latest
+          git push origin latest
+
+      - name: Criar ou atualizar Release latest
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: "Release Lambda - Latest"
+          files: lambda_function.zip
+          prerelease: false
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
