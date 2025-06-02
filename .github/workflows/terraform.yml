@@ -16,11 +16,22 @@ jobs:
       AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_SESSION_TOKEN:     ${{ secrets.AWS_SESSION_TOKEN }}
-      TF_VAR_db_password:    ${{ secrets.DB_PASSWORD }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+
+      # ───────────────────────────────────────────────────────
+      # 1) Zipar o código da Lambda (lambdaAuth)
+      # ───────────────────────────────────────────────────────
+      - name: Build Lambda (zip)
+        run: |
+          # Navega até a raiz do repositório
+          cd $GITHUB_WORKSPACE
+
+          # Volta a pasta 'lambda/auth-lambda/src' para zipar apenas o conteúdo necessário.
+          # O nome do ZIP resultante ficará em 'lambdaAuth.zip' na raiz do projeto.
+          zip -j lambdaAuth.zip lambda/auth-lambda/src/*.py
 
       - name: Setup Terraform CLI
         uses: hashicorp/setup-terraform@v2
