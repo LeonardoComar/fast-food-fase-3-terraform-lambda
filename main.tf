@@ -87,7 +87,7 @@ resource "aws_lambda_permission" "apigw_invoke" {
   # O source_arn precisa seguir o padrão:
   # arn:aws:execute-api:<region>:<account_id>:<api_id>/*/*
   # (asteriscos para abranger qualquer método e qualquer rota)
-  source_arn = "arn:aws:execute-api:${aws_lambda_function.lambda_auth.region}:${data.aws_caller_identity.current.account_id}:${aws_apigatewayv2_api.eks_proxy_api.id}/*/*"
+  source_arn = "arn:aws:execute-api:us-east-1:${data.aws_caller_identity.current.account_id}:${aws_apigatewayv2_api.eks_proxy_api.id}/*/*"
 }
 
 ##############################################
@@ -100,7 +100,7 @@ resource "aws_apigatewayv2_authorizer" "lambda_auth" {
   authorizer_type = "REQUEST"
 
   # URI no formato esperado para Lambda em HTTP API v2:
-  authorizer_uri = "arn:aws:apigateway:${aws_lambda_function.lambda_auth.region}:lambda:path/2015-03-31/functions/${aws_lambda_function.lambda_auth.arn}/invocations"
+  authorizer_uri = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${aws_lambda_function.lambda_auth.arn}/invocations"
 
   # De onde a Lambda irá extrair o token de autorização (header Authorization)
   identity_sources = ["$request.header.Authorization"]
