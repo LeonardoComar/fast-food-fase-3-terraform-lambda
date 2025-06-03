@@ -20,7 +20,7 @@ def check_cpf_in_test_api(cpf):
             return {"name": "Teste Usuario", "cpf": cpf}
         return None
     except requests.exceptions.RequestException as e:
-        print(f"Erro ao conectar à API: {e}")
+        print(f"Error connecting to API: {e}")
         return None
 
 def generate_jwt(payload, secret="SECRET"):
@@ -37,7 +37,7 @@ def create_user_in_cognito(username):
             UserAttributes=[
                 {
                     'Name': 'email',
-                    'Value': f"{username}@exemplo.com"
+                    'Value': f"{username}@email.com"
                 },
                 {
                     'Name': 'email_verified',
@@ -45,10 +45,10 @@ def create_user_in_cognito(username):
                 }
             ]
         )
-        print("Usuário criado com sucesso no Cognito.")
+        print("User successfully created in Cognito.")
         return response
     except Exception as e:
-        print(f"Erro ao criar o usuário no Cognito: {e}")
+        print(f"Error creating user in Cognito: {e}")
         raise
 
 def store_token_in_cognito(username, token):
@@ -65,28 +65,28 @@ def store_token_in_cognito(username, token):
                 }
             ]
         )
-        print("Token armazenado com sucesso no Cognito.")
+        print("Token successfully stored in Cognito.")
         return response
     except client.exceptions.UserNotFoundException:
-        print("Usuário não encontrado. Criando usuário...")
+        print("User not found. Creating user...")
         create_user_in_cognito(username)
         return store_token_in_cognito(username, token)
     except Exception as e:
-        print(f"Erro ao armazenar o token no Cognito: {e}")
+        print(f"Error storing token in Cognito: {e}")
         raise
 
 def lambda_handler(event, context):
     cpf = event.get("queryStringParameters", {}).get("cpf")
     if not cpf:
-        return {"statusCode": 400, "body": "CPF não fornecido"}
+        return {"statusCode": 400, "body": "CPF not provided"}
 
     if not validate_cpf(cpf):
-        return {"statusCode": 401, "body": "CPF inválido"}
+        return {"statusCode": 401, "body": "Invalid CPF"}
 
     client_data = check_cpf_in_test_api(cpf)
     if client_data:
         token = generate_jwt(client_data)
         store_token_in_cognito(client_data["cpf"], token)
-        return {"statusCode": 200, "body": f"Token JWT: {token}"}
+        return {"statusCode": 200, "body": f"JWT Token: {token}"}
     else:
-        return {"statusCode": 404, "body": "CPF não encontrado"}
+        return {"statusCode": 404, "body": "CPF not found"}
